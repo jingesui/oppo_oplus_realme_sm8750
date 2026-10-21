@@ -1,4 +1,4 @@
-name: 单独编译内核模块 (ADSP & 充电)
+name: 单独编译内核模块 (提取 ADSP 等)
 
 env:
   TZ: Asia/Shanghai
@@ -21,12 +21,12 @@ jobs:
           mkdir kernel_workspace
           cd kernel_workspace
           
-          echo "正在克隆内核源码..."
+          echo "正在克隆源码..."
           aria2c -s16 -x16 -k1M https://github.com/cctv18/android_kernel_common_oneplus_sm8750/archive/refs/heads/oneplus/sm8750_v_15.0.2_oneplus_13_6.6.66.zip -o common.zip
           unzip -q common.zip
           mv "android_kernel_common_oneplus_sm8750-oneplus-sm8750_v_15.0.2_oneplus_13_6.6.66" common
           
-          echo "正在克隆 llvm-clang18 工具链..."
+          echo "正在克隆 clang 工具链..."
           mkdir -p clang18
           aria2c -s16 -x16 -k1M https://github.com/cctv18/oneplus_sm8650_toolchain/releases/download/LLVM-Clang18-r510928/clang-r510928.zip -o clang.zip
           unzip -q clang.zip -d clang18
@@ -35,7 +35,7 @@ jobs:
           aria2c -s16 -x16 -k1M https://github.com/cctv18/oneplus_sm8650_toolchain/releases/download/LLVM-Clang18-r510928/build-tools.zip -o build-tools.zip
           unzip -q build-tools.zip
 
-      - name: 配置内核并编译模块
+      - name: 编译内核并提取模块
         run: |
           WORKDIR="$(pwd)"
           export PATH="$WORKDIR/kernel_workspace/clang18/bin:$PATH"
@@ -43,36 +43,26 @@ jobs:
           
           cd kernel_workspace/common
           
-          echo "清理并生成默认配置..."
+          echo "1. 生成默认配置..."
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error gki_defconfig
           
-          echo "准备编译环境..."
-          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error modules_prepare
+          echo "2. 编译 Image (这一步是为了生成 Module.symvers 符号表)..."
+          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error Image
           
-          echo "开始编译 ADSP 模块 (drivers/remoteproc)..."
-          # 编译 ADSP 所在的目录，生成 qcom_q6v5_adsp.ko 等
+          echo "3. 独立编译 ADSP 模块 (drivers/remoteproc)..."
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="clang" LD="ld.lld" HOSTLD=ld.lld O=out M=drivers/remoteproc KCFLAGS+=-O2 KCFLAGS+=-Wno-error modules
-          
-          echo "开始编译充电模块 (如果配置为m)..."
-          # 注意：充电驱动大部分为 y，这里以防万一寻找可编的 m 模块
-          # 由于附属仓库在另一个 GitHub 里，如果直接编主仓库的供电模块可以按以下方式
-          # make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="clang" LD="ld.lld" HOSTLD=ld.lld O=out M=drivers/power/supply KCFLAGS+=-O2 KCFLAGS+=-Wno-error modules
 
       - name: 收集并打包 .ko 文件
         run: |
           cd kernel_workspace
           mkdir -p ko_output
           
-          echo "提取 remoteproc 目录下的所有 .ko 文件..."
+          echo "提取 ADSP 相关的所有 .ko 文件..."
           find common/out/drivers/remoteproc -name "*.ko" -exec cp {} ko_output/ \;
-          
-          echo "提取 power 目录下的所有 .ko 文件..."
-          find common/out/drivers/power -name "*.ko" -exec cp {} ko_output/ \; || true
           
           echo "当前提取到的模块列表："
           ls -la ko_output/
           
-          # 打包成 zip 方便下载
           cd ko_output
           zip -r ../compiled_modules.zip .
 
